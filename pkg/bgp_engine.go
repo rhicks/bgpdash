@@ -4,6 +4,7 @@ import (
 	"context"
 	api "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/server"
+	"google.golang.org/protobuf/encoding/protojson"
 	"log"
 )
 
@@ -56,32 +57,54 @@ func (s *BGPService) AddNeighbor(neighborAddress string, neighborAsn uint32) err
 	})
 }
 
-// MonitorPrefixes sets up a watch for BGP route updates
+// MonitorPrefixes establishes a real-time monitor for BGP route updates and displays them
+// in both raw protobuf format and prettified JSON. The function runs continuously,
+// processing BGP updates as they are received from peer routers.
 func (s *BGPService) MonitorPrefixes() {
-	// Set up event watching with filters
+	// Initialize JSON marshaler with formatting options for better readability
+	// Multiline ensures each field is on a new line
+	// Indent specifies the spacing for nested structures
+	marshaler := protojson.MarshalOptions{
+		Multiline: true, // Format JSON across multiple lines
+		Indent:    "  ", // Use two spaces for each level of indentation
+	}
+
+	// Begin watching for BGP events with specific filtering criteria
 	err := s.server.WatchEvent(s.context, &api.WatchEventRequest{
 		Table: &api.WatchEventRequest_Table{
 			Filters: []*api.WatchEventRequest_Table_Filter{
 				{
-					Type: api.WatchEventRequest_Table_Filter_BEST, // Only watch for best path updates
+					// Filter for best paths only to avoid duplicate routes
+					// This ensures we only see the winning BGP routes that are
+					// actually being used for forwarding
+					Type: api.WatchEventRequest_Table_Filter_BEST,
 				},
 			},
 		},
 	}, func(r *api.WatchEventResponse) {
-		// Process each received event
+		// Extract the routing table information from the response
 		if table := r.GetTable(); table != nil {
-			// Iterate through all paths in the update
+			// Process each path (route) in the update
 			for _, path := range table.Paths {
-				// Check if the path has NLRI (Network Layer Reachability Information)
-				if nlri := path.GetNlri(); nlri != nil {
-					// Log the received prefix
-					log.Printf("Received prefix: %s\n", nlri.String())
+				// Display the raw protobuf message with all fields
+				// The %+v format prints field names along with their values
+				log.Printf("Received BGP Update:\n%+v\n", path)
+
+				// Convert the protobuf message to formatted JSON
+				// This provides a more structured and readable view of the update
+				jsonBytes, err := marshaler.Marshal(path)
+				if err != nil {
+					log.Printf("Error marshaling to JSON: %v", err)
+					continue
 				}
+				// Print the formatted JSON with proper indentation
+				log.Printf("BGP Update in JSON format:\n%s\n", string(jsonBytes))
 			}
 		}
 	})
 
-	// Handle any errors during event watching
+	// Handle any errors that occur during the watch setup or execution
+	// This includes connection issues or invalid message formats
 	if err != nil {
 		log.Printf("Error watching events: %v\n", err)
 	}
