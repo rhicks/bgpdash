@@ -7,10 +7,10 @@ import (
 
 func main() {
 	// Define Variables
-	localRouterId := "192.0.2.1" // - Router ID: 192.0.2.1 (should be unique in the network, typically an IP address)
-	localASN := 65001            // - ASN: 65001 (Autonomous System Number in private ASN range)
-	remotePeerIP := "192.0.2.2"  // - Neighbor IP: 192.0.2.2 (the IP address of the remote BGP peer)
-	remoteASN := 65002           // - Neighbor ASN: 65002 (the ASN of the remote BGP peer)
+	localRouterId := "192.168.1.213" // - Router ID: 192.0.2.1 (should be unique in the network, typically an IP address)
+	localASN := 65001                // - ASN: 65001 (Autonomous System Number in private ASN range)
+	remotePeerIP := "192.168.1.89"   // - Neighbor IP: 192.0.2.2 (the IP address of the remote BGP peer)
+	remoteASN := 65002               // - Neighbor ASN: 65002 (the ASN of the remote BGP peer)
 
 	// Create a new instance of the BGP service
 	bgpService := pkg.NewBGPService()

@@ -31,7 +31,7 @@ func (s *BGPService) Start(routerId string, asn uint32) error {
 		Global: &api.Global{
 			Asn:        asn,      // Autonomous System Number
 			RouterId:   routerId, // Router ID (typically an IP address)
-			ListenPort: -1,       // Use default BGP port (179)
+			ListenPort: 179,      // Use default BGP port (179)
 		},
 	}); err != nil {
 		return err
