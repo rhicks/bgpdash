@@ -1,116 +1,118 @@
 package pkg
 
 import (
-	"context"
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/server"
-	"google.golang.org/protobuf/encoding/protojson"
-	"log"
+	// These imports provide types that are often reference types or contain pointers internally
+	"context"                                       // context.Context is an interface type, often passed as-is
+	api "github.com/osrg/gobgp/v3/api"              // api types are protobuf messages, used as pointers
+	"github.com/osrg/gobgp/v3/pkg/server"           // server provides BGP functionality via pointer types
+	"google.golang.org/protobuf/encoding/protojson" // used for JSON marshaling of pointer-based protobuf messages
+	"log"                                           // provides logging functions that take interface{} arguments (often pointers)
 )
 
 // BGPService represents a BGP service instance with a server and context
+// This struct is always used as a pointer (*BGPService) because:
+// 1. It contains a pointer field (server)
+// 2. Methods need to modify its state
+// 3. It's shared between goroutines
 type BGPService struct {
-	server  *server.BgpServer // The main BGP server instance
-	context context.Context   // Context for managing BGP operations
+	server  *server.BgpServer // Pointer to server instance - required by GoBGP API
+	context context.Context   // Interface type, internally may contain pointers
 }
 
 // NewBGPService creates and initializes a new BGP service
+// Returns *BGPService (pointer) because:
+// 1. Methods need to modify the service state
+// 2. Multiple goroutines share this instance
+// 3. Avoid copying the server pointer
 func NewBGPService() *BGPService {
 	return &BGPService{
-		server:  server.NewBgpServer(), // Create a new BGP server instance
-		context: context.Background(),  // Create a background context
+		server:  server.NewBgpServer(), // Returns *BgpServer (pointer) as required by GoBGP
+		context: context.Background(),  // Returns interface (may contain pointers internally)
 	}
 }
 
 // Start initializes and starts the BGP server with the given router ID and ASN
+// Uses pointer receiver (*BGPService) to modify server state
+// Parameters are passed by value as they're small and immutable
 func (s *BGPService) Start(routerId string, asn uint32) error {
-	// Start the BGP server in a separate goroutine
-	go s.server.Serve()
+	go s.server.Serve() // server pointer is safe to use across goroutines
 
-	// Configure and start the BGP process with global parameters
+	// StartBgp takes pointer to api.StartBgpRequest containing configuration
+	// Global config is also a pointer as required by protobuf
 	if err := s.server.StartBgp(s.context, &api.StartBgpRequest{
-		Global: &api.Global{
-			Asn:        asn,      // Autonomous System Number
-			RouterId:   routerId, // Router ID (typically an IP address)
-			ListenPort: 179,      // Use default BGP port (179)
+		Global: &api.Global{ // Pointer to protobuf message
+			Asn:        asn,      // Value type (uint32)
+			RouterId:   routerId, // Value type (string)
+			ListenPort: 179,      // Value type (int)
 		},
 	}); err != nil {
-		return err
+		return err // error interface (contains pointer)
 	}
 
 	return nil
 }
 
 // AddNeighbor configures a new BGP peer with the specified address and ASN
+// Uses pointer receiver to modify server state
+// Parameters are passed by value (small, immutable types)
 func (s *BGPService) AddNeighbor(neighborAddress string, neighborAsn uint32) error {
 	// Create neighbor configuration
+	// Uses pointers for protobuf messages as required by gRPC
 	n := &api.Peer{
-		Conf: &api.PeerConf{
-			NeighborAddress: neighborAddress, // IP address of the BGP peer
-			PeerAsn:         neighborAsn,     // ASN of the BGP peer
+		Conf: &api.PeerConf{ // Nested pointer to protobuf message
+			NeighborAddress: neighborAddress, // Value type (string)
+			PeerAsn:         neighborAsn,     // Value type (uint32)
 		},
 	}
 
-	// Add the peer to the BGP server
+	// AddPeer takes pointer to request containing pointer to peer config
 	return s.server.AddPeer(s.context, &api.AddPeerRequest{
-		Peer: n,
+		Peer: n, // Pointer to peer configuration
 	})
 }
 
-// MonitorPrefixes establishes a real-time monitor for BGP route updates and displays them
-// in both raw protobuf format and prettified JSON. The function runs continuously,
-// processing BGP updates as they are received from peer routers.
+// MonitorPrefixes establishes a real-time monitor for BGP route updates
+// Uses pointer receiver to access server state
+// Safe for concurrent use as server handles synchronization
 func (s *BGPService) MonitorPrefixes() {
-	// Initialize JSON marshaler with formatting options for better readability
-	// Multiline ensures each field is on a new line
-	// Indent specifies the spacing for nested structures
+	// Value type as it's just configuration options
 	marshaler := protojson.MarshalOptions{
-		Multiline: true, // Format JSON across multiple lines
-		Indent:    "  ", // Use two spaces for each level of indentation
+		Multiline: true,
+		Indent:    "  ",
 	}
 
-	// Begin watching for BGP events with specific filtering criteria
+	// WatchEvent takes pointer to request structure
 	err := s.server.WatchEvent(s.context, &api.WatchEventRequest{
-		Table: &api.WatchEventRequest_Table{
-			Filters: []*api.WatchEventRequest_Table_Filter{
+		Table: &api.WatchEventRequest_Table{ // Pointer to protobuf message
+			Filters: []*api.WatchEventRequest_Table_Filter{ // Slice of pointers
 				{
-					// Filter for best paths only to avoid duplicate routes
-					// This ensures we only see the winning BGP routes that are
-					// actually being used for forwarding
 					Type: api.WatchEventRequest_Table_Filter_BEST,
 				},
 			},
 		},
-	}, func(r *api.WatchEventResponse) {
-		// Extract the routing table information from the response
+	}, func(r *api.WatchEventResponse) { // Callback receives pointer to response
 		if table := r.GetTable(); table != nil {
-			// Process each path (route) in the update
-			for _, path := range table.Paths {
-				// Display the raw protobuf message with all fields
-				// The %+v format prints field names along with their values
+			for _, path := range table.Paths { // Iterating over slice of pointers
 				log.Printf("Received BGP Update:\n%+v\n", path)
 
-				// Convert the protobuf message to formatted JSON
-				// This provides a more structured and readable view of the update
+				// Marshal converts pointer to protobuf to JSON
 				jsonBytes, err := marshaler.Marshal(path)
 				if err != nil {
 					log.Printf("Error marshaling to JSON: %v", err)
 					continue
 				}
-				// Print the formatted JSON with proper indentation
 				log.Printf("BGP Update in JSON format:\n%s\n", string(jsonBytes))
 			}
 		}
 	})
 
-	// Handle any errors that occur during the watch setup or execution
-	// This includes connection issues or invalid message formats
 	if err != nil {
-		log.Printf("Error watching events: %v\n", err)
+		log.Printf("Error watching events: %v\n", err) // err is interface containing pointer
 	}
 }
 
 // Stop gracefully shuts down the BGP server
+// Uses pointer receiver to modify server state
 func (s *BGPService) Stop() {
-	s.server.Stop()
+	s.server.Stop() // Calls Stop on the server pointer
 }
