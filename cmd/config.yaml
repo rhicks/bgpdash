@@ -1,0 +1,7 @@
+bgp:
+  local:
+    routerId: "192.168.1.213"
+    asn: 65001
+  remote:
+    peerIP: "192.168.1.89"
+    asn: 65002

@@ -8,13 +8,11 @@ import (
 )
 
 func main() {
-	// Define Variables
-	// These are string and int primitives, stored on the stack
-	// Using regular variables here as they're immutable configuration values
-	localRouterId := "192.168.1.213" // Router ID as string - no pointer needed as it's a read-only value
-	localASN := 65001                // ASN as int - small fixed-size value, more efficient on stack
-	remotePeerIP := "192.168.1.89"   // Peer IP as string - no pointer needed as it's a read-only value
-	remoteASN := 65002               // Peer ASN as int - small fixed-size value, more efficient on stack
+	// Load configuration from YAML file
+	config, err := pkg.LoadConfig("cmd/config.yaml")
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
 
 	// Create a new instance of the BGP service
 	// bgpService is likely a pointer (*BGPService) returned by NewBGPService()
@@ -28,7 +26,7 @@ func main() {
 	// Using localRouterId as string (passed by value since strings are immutable)
 	// uint32(localASN) is passed by value since it's a basic type
 	// The method is called on bgpService pointer to modify the service state
-	err := bgpService.Start(localRouterId, uint32(localASN))
+	err = bgpService.Start(config.BGP.Local.RouterID, uint32(config.BGP.Local.ASN))
 	if err != nil {
 		// log.Fatalf internally handles pointer to the error interface
 		// error interface is itself a pointer type in implementation
@@ -39,7 +37,7 @@ func main() {
 	// remotePeerIP is passed by value (strings are immutable)
 	// uint32(remoteASN) is passed by value (basic type)
 	// Method called on bgpService pointer to modify internal state
-	err = bgpService.AddNeighbor(remotePeerIP, uint32(remoteASN))
+	err = bgpService.AddNeighbor(config.BGP.Remote.PeerIP, uint32(config.BGP.Remote.ASN))
 	if err != nil {
 		// err is an interface (containing a pointer) passed to Fatalf
 		log.Fatalf("Failed to add neighbor: %v", err)
