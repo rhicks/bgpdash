@@ -1,12 +1,19 @@
 package pkg
 
 import (
-	// These imports provide types that are often reference types or contain pointers internally
-	"context"                                       // context.Context is an interface type, often passed as-is
-	api "github.com/osrg/gobgp/v3/api"              // api types are protobuf messages, used as pointers
-	"github.com/osrg/gobgp/v3/pkg/server"           // server provides BGP functionality via pointer types
-	"google.golang.org/protobuf/encoding/protojson" // used for JSON marshaling of pointer-based protobuf messages
-	"log"                                           // provides logging functions that take interface{} arguments (often pointers)
+	"context"
+	"encoding/json"
+	"fmt"
+	api "github.com/osrg/gobgp/v3/api"
+	"github.com/osrg/gobgp/v3/pkg/server"
+	"log"
+	"net"
+)
+
+const (
+	RpkiValid    = 0
+	RpkiNotFound = 1
+	RpkiInvalid  = 2
 )
 
 // BGPService represents a BGP service instance with a server and context
@@ -63,6 +70,31 @@ func (s *BGPService) AddNeighbor(neighborAddress string, neighborAsn uint32) err
 			NeighborAddress: neighborAddress, // Value type (string)
 			PeerAsn:         neighborAsn,     // Value type (uint32)
 		},
+		AfiSafis: []*api.AfiSafi{
+			{
+				Config: &api.AfiSafiConfig{
+					Family: &api.Family{
+						Afi:  api.Family_AFI_IP,
+						Safi: api.Family_SAFI_UNICAST,
+					},
+					Enabled: true,
+				},
+				MpGracefulRestart: &api.MpGracefulRestart{
+					Config: &api.MpGracefulRestartConfig{
+						Enabled: true,
+					},
+				},
+			},
+		},
+		Transport: &api.Transport{
+			PassiveMode: false,
+		},
+		GracefulRestart: &api.GracefulRestart{
+			Enabled:     true,
+			RestartTime: 90,
+			//LongLivedEnabled:    true,
+			NotificationEnabled: true,
+		},
 	}
 
 	// AddPeer takes pointer to request containing pointer to peer config
@@ -75,39 +107,145 @@ func (s *BGPService) AddNeighbor(neighborAddress string, neighborAsn uint32) err
 // Uses pointer receiver to access server state
 // Safe for concurrent use as server handles synchronization
 func (s *BGPService) MonitorPrefixes() {
-	// Value type as it's just configuration options
-	marshaler := protojson.MarshalOptions{
-		Multiline: true,
-		Indent:    "  ",
-	}
-
-	// WatchEvent takes pointer to request structure
 	err := s.server.WatchEvent(s.context, &api.WatchEventRequest{
-		Table: &api.WatchEventRequest_Table{ // Pointer to protobuf message
-			Filters: []*api.WatchEventRequest_Table_Filter{ // Slice of pointers
+		Table: &api.WatchEventRequest_Table{
+			Filters: []*api.WatchEventRequest_Table_Filter{
 				{
-					Type: api.WatchEventRequest_Table_Filter_BEST,
+					Type: api.WatchEventRequest_Table_Filter_ADJIN,
 				},
 			},
 		},
-	}, func(r *api.WatchEventResponse) { // Callback receives pointer to response
+	}, func(r *api.WatchEventResponse) {
 		if table := r.GetTable(); table != nil {
-			for _, path := range table.Paths { // Iterating over slice of pointers
-				log.Printf("Received BGP Update:\n%+v\n", path)
+			for _, path := range table.Paths {
+				var update BGPUpdateMessage
+				update.FromPeer = path.GetNeighborIp()
+				update.Timestamp = path.GetAge().GetSeconds()
+				update.IsWithdraw = path.IsWithdraw
 
-				// Marshal converts pointer to protobuf to JSON
-				jsonBytes, err := marshaler.Marshal(path)
-				if err != nil {
-					log.Printf("Error marshaling to JSON: %v", err)
-					continue
+				// Zero/empty initializations
+				update.NextHop = net.IP{}
+				update.Origin = nil
+				update.MED = nil
+				update.LocalPref = nil
+				update.AggregatorAS = nil
+				update.AggregatorAddress = nil
+				update.Communities = []uint32{}
+				update.CommunityStrings = []string{}
+				update.ExtendedCommunities = [][]byte{}
+				update.LargeCommunities = [][3]uint32{}
+				update.ASPath = [][]uint32{}
+				update.WithdrawnRoutes = []struct {
+					PrefixLength uint8
+					Prefix       net.IP
+				}{}
+				update.NLRI = []struct {
+					PrefixLength uint8
+					Prefix       net.IP
+				}{}
+				update.MPReachNLRI = struct {
+					AFI     uint16
+					SAFI    uint8
+					NextHop net.IP
+					NLRIs   []struct {
+						PrefixLength uint8
+						Prefix       net.IP
+					}
+				}{}
+				update.MPUnreachNLRI = struct {
+					AFI   uint16
+					SAFI  uint8
+					NLRIs []struct {
+						PrefixLength uint8
+						Prefix       net.IP
+					}
+				}{}
+
+				// Extract attributes
+				for _, attr := range path.GetPattrs() {
+					if nh := new(api.NextHopAttribute); attr.UnmarshalTo(nh) == nil {
+						update.NextHop = net.ParseIP(nh.NextHop)
+					}
+					if origin := new(api.OriginAttribute); attr.UnmarshalTo(origin) == nil {
+						u8 := uint8(origin.Origin)
+						update.Origin = &u8
+					}
+					if med := new(api.MultiExitDiscAttribute); attr.UnmarshalTo(med) == nil {
+						m := med.Med
+						update.MED = &m
+					}
+					if lp := new(api.LocalPrefAttribute); attr.UnmarshalTo(lp) == nil {
+						l := lp.LocalPref
+						update.LocalPref = &l
+					}
+					if agg := new(api.AggregatorAttribute); attr.UnmarshalTo(agg) == nil {
+						update.AggregatorAS = &agg.Asn
+						update.AggregatorAddress = net.ParseIP(agg.Address)
+					}
+					if comm := new(api.CommunitiesAttribute); attr.UnmarshalTo(comm) == nil {
+						update.Communities = comm.Communities
+						for _, c := range comm.Communities {
+							asn := c >> 16
+							local := c & 0xFFFF
+							update.CommunityStrings = append(update.CommunityStrings, fmt.Sprintf("%d:%d", asn, local))
+						}
+					}
+					if extComm := new(api.ExtendedCommunitiesAttribute); attr.UnmarshalTo(extComm) == nil {
+						for _, c := range extComm.Communities {
+							if c != nil {
+								update.ExtendedCommunities = append(update.ExtendedCommunities, c.Value)
+							}
+						}
+					}
+					if largeComm := new(api.LargeCommunitiesAttribute); attr.UnmarshalTo(largeComm) == nil {
+						for _, c := range largeComm.Communities {
+							update.LargeCommunities = append(update.LargeCommunities, [3]uint32{c.GlobalAdmin, c.LocalData1, c.LocalData2})
+						}
+					}
+					// Handle AS_PATH attribute
+					if asPath := new(api.AsPathAttribute); attr.UnmarshalTo(asPath) == nil {
+						for _, segment := range asPath.Segments {
+							update.ASPath = append(update.ASPath, segment.Numbers)
+						}
+					}
 				}
-				log.Printf("BGP Update in JSON format:\n%s\n", string(jsonBytes))
+
+				// Extract NLRI
+				var nlri api.IPAddressPrefix
+				if err := path.GetNlri().UnmarshalTo(&nlri); err == nil {
+					update.NLRI = append(update.NLRI, struct {
+						PrefixLength uint8
+						Prefix       net.IP
+					}{
+						PrefixLength: uint8(nlri.PrefixLen),
+						Prefix:       net.ParseIP(nlri.Prefix),
+					})
+				}
+
+				// RPKI validation state
+				switch path.GetValidation().GetState() {
+				case RpkiValid:
+					state := "valid"
+					update.RPKIValidationState = &state
+				case RpkiInvalid:
+					state := "invalid"
+					update.RPKIValidationState = &state
+				case RpkiNotFound:
+					state := "not-found"
+					update.RPKIValidationState = &state
+				}
+
+				if jsonBytes, err := json.MarshalIndent(update, "", "  "); err == nil {
+					log.Printf("BGP Update JSON:\n%s", string(jsonBytes))
+				} else {
+					log.Printf("Error marshalling update to JSON: %v", err)
+				}
 			}
 		}
 	})
 
 	if err != nil {
-		log.Printf("Error watching events: %v\n", err) // err is interface containing pointer
+		log.Printf("Error watching events: %v\n", err)
 	}
 }
 
